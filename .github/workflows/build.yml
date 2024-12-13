@@ -84,38 +84,18 @@ jobs:
               cp -rf ../../script/config.yaml ../../output/data/config.yaml
 
               cd ../../output
-              zip -qr nezha-dashboard.zip .
-              tar -czf nezha-dashboard.tar.gz *
-              mv ../nezha-dashboard.zip .
+              zip -qr nezha-freebsd.zip .
+
+              # Move the zip file to the root directory for uploading
+              mv nezha-freebsd.zip ../nezha-freebsd-${VERSION}.zip
 
               echo "Artifacts for version $VERSION prepared."
+              cd ..
               ls -all
-              file nezha-dashboard
             done
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
         with:
           name: nezha-freebsd
-          path: |
-            nezha/output/*
-
-      - name: Release All Versions
-        uses: ncipollo/release-action@v1
-        with:
-          tag: ${{ env.VERSION }}
-          artifacts: "nezha/output/*.zip,nezha/output/*.tar.gz"
-          generateReleaseNotes: true
-          makeLatest: legacy
-          omitBody: false
-          omitBodyDuringUpdate: false
-          omitDraftDuringUpdate: false
-          omitName: false
-          omitNameDuringUpdate: false
-          omitPrereleaseDuringUpdate: false
-          removeArtifacts: false
-          replacesArtifacts: true
-          skipIfReleaseExists: false
-          updateOnlyUnreleased: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          path: nezha-freebsd-*.zip
