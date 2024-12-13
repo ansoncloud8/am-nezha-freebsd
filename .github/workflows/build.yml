@@ -7,8 +7,7 @@ on:
     inputs:
       tag:
         description: 'Tag to release'
-        #required: true
-        #default: 'v1.0.0'
+        required: false
 
 jobs:
   release:
@@ -26,8 +25,8 @@ jobs:
             pkg install -y wget curl git go121 gcc bash jq node zip
             ln -s /usr/local/bin/go121 /usr/local/bin/go
           run: |
-            # Set version
-            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Determine version
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag }}" ]; then
               VERSION=${{ github.event.inputs.tag }}
             else
               VERSION=$(curl -sL "https://api.github.com/repos/naiba/nezha/releases/latest" | jq -r .tag_name)
