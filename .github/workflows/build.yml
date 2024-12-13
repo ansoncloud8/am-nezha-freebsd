@@ -4,10 +4,15 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release'
+        required: true
+        default: 'v1.0.0'
 
 jobs:
   release:
-    name: Build and Release All Missing Versions
+    name: build and release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,84 +26,122 @@ jobs:
             pkg install -y wget curl git go121 gcc bash jq node zip
             ln -s /usr/local/bin/go121 /usr/local/bin/go
           run: |
-            # Fetch latest local and remote tags
-            LOCAL_LATEST=$(git describe --tags $(git rev-list --tags --max-count=1) || echo "")
-            REMOTE_TAGS=$(curl -sL "https://api.github.com/repos/naiba/nezha/releases" | jq -r '.[].tag_name' | sort -V)
-
-            # Find all unsynced versions
-            UNSYNCED_VERSIONS=$(echo "$REMOTE_TAGS" | awk -v local="$LOCAL_LATEST" '$0 > local')
-
-            if [ -z "$UNSYNCED_VERSIONS" ]; then
-              echo "All versions are already synced."
-              exit 0
+            # Set version
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              VERSION=${{ github.event.inputs.tag }}
+            else
+              VERSION=$(curl -sL "https://api.github.com/repos/naiba/nezha/releases/latest" | jq -r .tag_name)
             fi
 
-            echo "Unsynced versions: $UNSYNCED_VERSIONS"
+            if [ -z "${VERSION}" ]; then
+              echo "Error: VERSION could not be determined" >&2
+              exit 1
+            fi
 
-            for VERSION in $UNSYNCED_VERSIONS; do
-              echo "Processing version: $VERSION"
+            echo "VERSION=${VERSION}" >> $GITHUB_ENV
+            echo "Version set to: ${VERSION}"
 
-              echo "VERSION=${VERSION}" >> $GITHUB_ENV
-              echo "Version set to: ${VERSION}"
+            # Build the project
+            version_num=${VERSION#v}
 
-              # Clone the specific tag
-              if git ls-remote --tags https://github.com/naiba/nezha | grep -q "refs/tags/${VERSION}"; then
-                git clone -b ${VERSION} https://github.com/naiba/nezha
-              else
-                echo "Error: Tag ${VERSION} not found in naiba/nezha repository" && exit 1
-              fi
+            if git ls-remote --tags https://github.com/naiba/nezha | grep -q "refs/tags/${VERSION}"; then
+              git clone -b ${VERSION} https://github.com/naiba/nezha
+            else
+              echo "Error: Tag ${VERSION} not found in naiba/nezha repository" && exit 1
+            fi
+            
+            # Clean old dist directories
+            rm -rf nezha/cmd/dashboard/*-dist
+            
+            # Download and prepare admin-frontend
+            wget -q https://github.com/nezhahq/admin-frontend/releases/download/v1.1/dist.zip -O admin-dist.zip
+            unzip -q admin-dist.zip
+            mv dist nezha/cmd/dashboard/admin-dist
+            rm admin-dist.zip
+            
+            # Download and prepare user-frontend
+            wget -q https://github.com/nezhahq/user-frontend/releases/download/v1.1.0/dist.zip -O user-dist.zip
+            unzip -q user-dist.zip
+            mv dist nezha/cmd/dashboard/user-dist
+            rm user-dist.zip
+            
+            # Download and prepare nazhua-frontend
+            wget -q https://github.com/hi2shark/nazhua/releases/download/v0.4.3/dist.zip -O nazhua-dist.zip
+            unzip -q nazhua-dist.zip
+            mv dist nezha/cmd/dashboard/nazhua-dist
+            rm nazhua-dist.zip
+            
+            # Download GeoIP database
+            rm -rf nezha/pkg/geoip/geoip.db
+            wget -qO nezha/pkg/geoip/geoip.db https://ipinfo.io/data/free/country.mmdb?token=${{ secrets.IPINFO_TOKEN }}
+            
+            echo "====================0 Install Swag for Swagger docs ========================"
+            # Install Swag for Swagger docs
+            go install github.com/swaggo/swag/cmd/swag@latest
+            
+            # Ensure Swag is in PATH
+            export PATH=$PATH:$(go env GOPATH)/bin
 
-              # Build and prepare artifacts
-              rm -rf nezha/cmd/dashboard/*-dist
-              wget -q https://github.com/nezhahq/admin-frontend/releases/download/v1.1/dist.zip -O admin-dist.zip
-              unzip -q admin-dist.zip
-              mv dist nezha/cmd/dashboard/admin-dist
-              rm admin-dist.zip
+            
+            echo "====================0 Install Swag init ========================"
+            # Generate Swagger docs
+            cd nezha
+            $(go env GOPATH)/bin/swag init --pd -d . -g ./cmd/dashboard/main.go -o ./cmd/dashboard/docs --parseGoList=false
+            
+            # Build the project
+            cd cmd/dashboard
+            echo "====================0 go build ========================"
+            go mod tidy
+            go build -ldflags="-s -w --extldflags '-static -fpic' -X github.com/naiba/nezha/service/singleton.Version=${version_num}"
+            echo "====================1 file dashboard ========================"
+            file dashboard
 
-              wget -q https://github.com/nezhahq/user-frontend/releases/download/v1.1.0/dist.zip -O user-dist.zip
-              unzip -q user-dist.zip
-              mv dist nezha/cmd/dashboard/user-dist
-              rm user-dist.zip
+            # Create output directory
+            mkdir -p ../../output
+            mv dashboard ../../output/nezha-dashboard
 
-              wget -q https://github.com/hi2shark/nazhua/releases/download/v0.4.3/dist.zip -O nazhua-dist.zip
-              unzip -q nazhua-dist.zip
-              mv dist nezha/cmd/dashboard/nazhua-dist
-              rm nazhua-dist.zip
+            # Prepare config.yaml
+            mkdir -p ../../output/data
+            cp -rf ../../script/config.yaml ../../output/data/config.yaml
 
-              rm -rf nezha/pkg/geoip/geoip.db
-              wget -qO nezha/pkg/geoip/geoip.db https://ipinfo.io/data/free/country.mmdb?token=${{ secrets.IPINFO_TOKEN }}
+            # Compress dist files
+            cd ../../output
 
-              go install github.com/swaggo/swag/cmd/swag@latest
-              export PATH=$PATH:$(go env GOPATH)/bin
+            zip -qr nezha-dashboard.zip .
+            mv nezha-dashboard.zip ..
 
-              cd nezha
-              $(go env GOPATH)/bin/swag init --pd -d . -g ./cmd/dashboard/main.go -o ./cmd/dashboard/docs --parseGoList=false
+            tar -czf nezha-dashboard.tar.gz *
 
-              cd cmd/dashboard
-              go mod tidy
-              go build -ldflags="-s -w --extldflags '-static -fpic' -X github.com/naiba/nezha/service/singleton.Version=${VERSION#v}"
+            mv ../nezha-dashboard.zip .
+            echo "====================3========================"
+            ls -all
 
-              mkdir -p ../../output
-              mv dashboard ../../output/nezha-dashboard
-              mkdir -p ../../output/data
-              cp -rf ../../script/config.yaml ../../output/data/config.yaml
+            echo "====================4========================"
+            file nezha-dashboard
 
-              cd ../../output
-              zip -qr nezha-freebsd.zip .
-
-              # Move the zip file to the root directory for uploading
-              mv nezha-freebsd.zip ../nezha-freebsd-${VERSION}.zip
-
-              # Debug: Check the generated artifact
-              echo "Generated artifact for version ${VERSION}:"
-              ls -al ../nezha-freebsd-${VERSION}.zip
-
-              cd ..
-            done
-
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v3
         with:
           name: nezha-freebsd
-          path: nezha-freebsd-*.zip
-          if-no-files-found: error
+          path: |
+            nezha/output/*
+
+      - name: Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ env.VERSION }}
+          artifacts: "nezha/output/*.zip,nezha/output/*.tar.gz"
+          generateReleaseNotes: true
+          makeLatest: legacy
+          omitBody: false
+          omitBodyDuringUpdate: false
+          omitDraftDuringUpdate: false
+          omitName: false
+          omitNameDuringUpdate: false
+          omitPrereleaseDuringUpdate: false
+          removeArtifacts: false
+          replacesArtifacts: true
+          skipIfReleaseExists: false
+          updateOnlyUnreleased: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
