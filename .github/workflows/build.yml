@@ -89,9 +89,11 @@ jobs:
               # Move the zip file to the root directory for uploading
               mv nezha-freebsd.zip ../nezha-freebsd-${VERSION}.zip
 
-              echo "Artifacts for version $VERSION prepared."
+              # Debug: Check the generated artifact
+              echo "Generated artifact for version ${VERSION}:"
+              ls -al ../nezha-freebsd-${VERSION}.zip
+
               cd ..
-              ls -all
             done
 
       - name: Upload artifacts
@@ -99,3 +101,4 @@ jobs:
         with:
           name: nezha-freebsd
           path: nezha-freebsd-*.zip
+          if-no-files-found: error
